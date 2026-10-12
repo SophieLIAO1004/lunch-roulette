@@ -361,6 +361,7 @@ details[open] summary{margin-bottom:12px}
         <button class="btn btn-ghost" id="favOnly">只留收藏</button>
       </div>
       <button class="btn btn-ghost hide" id="more" style="margin-top:8px">再載入 20 家</button>
+      <div class="note" id="moreNote" style="margin-top:9px;text-align:center;color:var(--ink-3)"></div>
     </div>
   </section>
 
@@ -405,6 +406,10 @@ details[open] summary{margin-bottom:12px}
         </div>
 
         <button class="btn btn-ghost" id="reset">清除本機資料（收藏與紀錄）</button>
+
+        <div class="note" style="margin-top:14px;text-align:center;color:var(--ink-3);font-size:11px">
+          版本 2026-10-12b · 翻頁與地圖按鈕
+        </div>
       </details>
     </div>
   </section>
@@ -865,10 +870,24 @@ async function loadMore(){
 
 function updateMoreBtn(){
   const btn = $("#more");
+  const note = $("#moreNote");
   const q = state.query;
-  const can = !!(q && q.nextPageToken) && !$("#mock").checked;
-  btn.classList.toggle("hide", !can);
-  btn.textContent = "再載入 20 家（多 1 次 API）";
+
+  if($("#mock").checked){
+    btn.classList.add("hide");
+    note.textContent = "測試模式沒有更多資料。";
+    return;
+  }
+  if(q && q.nextPageToken){
+    btn.classList.remove("hide");
+    btn.textContent = "再載入 20 家（多 1 次 API）";
+    note.textContent = "";
+  }else{
+    btn.classList.add("hide");
+    note.textContent = q
+      ? "這個範圍內的結果已經全部載入了。想要更多的話，把時間拉長或換個類別。"
+      : "";
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════
