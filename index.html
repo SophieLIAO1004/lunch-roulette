@@ -199,6 +199,7 @@ input[type=range]{flex:1;accent-color:var(--pen);height:22px}
   transition:.12s;
 }
 .icon:hover{background:var(--slip-2);color:var(--ink)}
+a.icon{text-decoration:none}
 .icon.on{color:var(--stamp)}
 
 /* ── 轉盤 ───────────────────────────────────── */
@@ -359,6 +360,7 @@ details[open] summary{margin-bottom:12px}
         <button class="btn btn-ghost" id="none">全不選</button>
         <button class="btn btn-ghost" id="favOnly">只留收藏</button>
       </div>
+      <button class="btn btn-ghost hide" id="more" style="margin-top:8px">再載入 20 家</button>
     </div>
   </section>
 
@@ -389,7 +391,8 @@ details[open] summary{margin-bottom:12px}
           <div class="label">目前用量估算</div>
           <div class="note">
             這個月已送出 <b><span id="usage">0</span></b> 次 Text Search 請求。<br>
-            Text Search 屬 Pro 級距，每月前 5,000 次免費。欄位遮罩已刻意排除評分、照片、營業時間細節，避免跳到 Enterprise 級距。
+            Text Search 屬 Pro 級距，每月前 5,000 次免費。一次搜尋算一次，按一次「再載入 20 家」也算一次。<br>
+            欄位遮罩刻意排除了評分與照片：照片要另外呼叫 Place Photos，那支屬 Enterprise 級距，每月只有 1,000 次免費，所以這裡改成用 ◎ 按鈕直接開 Google 地圖看，不花任何額度。
           </div>
         </div>
 
@@ -445,6 +448,10 @@ const CONFIG = {
 
   LANGUAGE: "zh-TW",
   REGION: "TW",
+
+  // 單頁筆數。Google 的上限就是 20，填更大會被壓回 20。
+  // 要更多就按「載入更多」翻頁，最多三頁共 60 家。
+  PAGE_SIZE: 20,
 
   // 直線等效速度（公尺／分），已內含都市繞路折扣。
   // 想更準可以改接 Routes API 的 Route Matrix，但那會多燒一組配額。
@@ -559,6 +566,7 @@ const state = {
   mins: store.get("mins", 10),
   cat:  store.get("cat", "any"),
   places: [],
+  query: null,          // 上次搜尋的條件 + nextPageToken，給「載入更多」用
   picked: new Set(),
   favs: new Set(store.get("favs", [])),
   history: store.get("history", []),   // [{id, name, at}]
@@ -674,6 +682,7 @@ function getPosition(){
 }
 
 function mockSearch(){
+  state.query = null;              // 測試模式沒有翻頁
   const cat = CATS.find(c => c.id === state.cat);
   const speed = CONFIG.SPEED[state.mode];
   const radius = radiusFor(state.mode, state.mins);
@@ -709,6 +718,65 @@ function mockSearch(){
   $("#resultSlip").scrollIntoView({ behavior:"smooth", block:"start" });
 }
 
+/* 送一次請求，回傳 { places, nextPageToken }。pageToken 有值就是翻頁。 */
+async function fetchPage(key, me, radius, cat, pageToken){
+  const body = {
+    textQuery: cat.q,
+    openNow: true,                 // ← 只回傳現在有開的
+    pageSize: CONFIG.PAGE_SIZE,    // 單頁上限 20，Google 會把更大的值壓到 20
+    languageCode: CONFIG.LANGUAGE,
+    regionCode: CONFIG.REGION,
+    locationBias: { circle: { center:{ latitude:me.lat, longitude:me.lng }, radius } },
+  };
+  // 翻頁時只需要帶 token，其他條件 Google 會沿用第一頁的
+  if(pageToken) body.pageToken = pageToken;
+
+  const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      "X-Goog-Api-Key": key,
+      "X-Goog-FieldMask": FIELD_MASK,
+    },
+    body: JSON.stringify(body),
+  });
+  bumpUsage();
+
+  if(!res.ok){
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `HTTP ${res.status}`);
+  }
+
+  const data = await res.json();
+  const speed = CONFIG.SPEED[state.mode];
+
+  const places = (data.places || []).map(p => {
+    const loc = { lat: p.location?.latitude, lng: p.location?.longitude };
+    const dist = (loc.lat != null) ? haversine(me, loc) : null;
+    return {
+      id: p.id,
+      name: p.displayName?.text || "（無名稱）",
+      addr: p.formattedAddress || "",
+      type: p.primaryTypeDisplayName?.text || "",
+      uri: p.googleMapsUri || "",
+      rating: p.rating ?? null,
+      dist,
+      mins: dist == null ? null : Math.max(1, Math.round(dist / speed)),
+    };
+  });
+
+  return { places, nextPageToken: data.nextPageToken || null };
+}
+
+/* 超過時間門檻的濾掉、依距離排序、去掉重複（翻頁偶爾會重覆回同一家） */
+function mergePlaces(existing, incoming){
+  const seen = new Set(existing.map(p => p.id));
+  const add = incoming
+    .filter(p => !seen.has(p.id))
+    .filter(p => p.mins == null || p.mins <= state.mins);
+  return existing.concat(add).sort((a,b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
+}
+
 async function search(){
   if($("#mock").checked){ mockSearch(); return; }
 
@@ -737,49 +805,11 @@ async function search(){
   const cat = CATS.find(c => c.id === state.cat);
 
   try{
-    const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "X-Goog-Api-Key": key,
-        "X-Goog-FieldMask": FIELD_MASK,
-      },
-      body: JSON.stringify({
-        textQuery: cat.q,
-        openNow: true,                 // ← 只回傳現在有開的
-        languageCode: CONFIG.LANGUAGE,
-        regionCode: CONFIG.REGION,
-        locationBias: { circle: { center:{ latitude:me.lat, longitude:me.lng }, radius } },
-      }),
-    });
-    bumpUsage();
+    const { places, nextPageToken } = await fetchPage(key, me, radius, cat, null);
 
-    if(!res.ok){
-      const body = await res.json().catch(() => ({}));
-      const detail = body?.error?.message || `HTTP ${res.status}`;
-      throw new Error(detail);
-    }
-
-    const data = await res.json();
-    const speed = CONFIG.SPEED[state.mode];
-
-    state.places = (data.places || [])
-      .map(p => {
-        const loc = { lat: p.location?.latitude, lng: p.location?.longitude };
-        const dist = (loc.lat != null) ? haversine(me, loc) : null;
-        return {
-          id: p.id,
-          name: p.displayName?.text || "（無名稱）",
-          addr: p.formattedAddress || "",
-          type: p.primaryTypeDisplayName?.text || "",
-          uri: p.googleMapsUri || "",
-          rating: p.rating ?? null,
-          dist,
-          mins: dist == null ? null : Math.max(1, Math.round(dist / speed)),
-        };
-      })
-      .filter(p => p.mins == null || p.mins <= state.mins)
-      .sort((a,b) => (a.dist ?? 1e9) - (b.dist ?? 1e9));
+    // 記住這次搜尋的條件，「載入更多」要沿用
+    state.query = { key, me, radius, cat, nextPageToken, pagesLoaded: 1 };
+    state.places = mergePlaces([], places);
 
     if(!state.places.length){
       say(`這個範圍內沒找到營業中的「${cat.label}」。把時間拉長一點，或換個類別試試。`, "info");
@@ -801,9 +831,54 @@ async function search(){
 }
 $("#search").onclick = search;
 
+/* 載入更多：Text Search 單頁最多 20 筆，最多三頁共 60 筆。
+   每翻一頁就多算一次 API 請求，所以做成手動按鈕而不是自動抓滿。 */
+async function loadMore(){
+  const q = state.query;
+  if(!q || !q.nextPageToken) return;
+
+  const btn = $("#more");
+  btn.disabled = true;
+  btn.textContent = "載入中…";
+
+  try{
+    const { places, nextPageToken } = await fetchPage(q.key, q.me, q.radius, q.cat, q.nextPageToken);
+    const before = state.places.length;
+
+    state.places = mergePlaces(state.places, places);
+    q.nextPageToken = nextPageToken;
+    q.pagesLoaded += 1;
+
+    // 新加進來的預設也勾選
+    places.forEach(p => { if(state.places.some(x => x.id === p.id)) state.picked.add(p.id); });
+
+    const added = state.places.length - before;
+    renderList();
+    if(!added) say("沒有新的店家了——這個範圍內的結果已經全部載入。", "info");
+  }catch(err){
+    say(`載入更多失敗：${err.message}`, "err");
+  }finally{
+    btn.disabled = false;
+    updateMoreBtn();
+  }
+}
+
+function updateMoreBtn(){
+  const btn = $("#more");
+  const q = state.query;
+  const can = !!(q && q.nextPageToken) && !$("#mock").checked;
+  btn.classList.toggle("hide", !can);
+  btn.textContent = "再載入 20 家（多 1 次 API）";
+}
+
 /* ═══════════════════════════════════════════════════════════
    8. 清單
    ═══════════════════════════════════════════════════════════ */
+function mapsUrl(p){
+  return p.uri ||
+    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.name)}&query_place_id=${p.id}`;
+}
+
 function menuFor(place){
   return MENUS.find(m =>
     m.match.some(k => k === place.id || place.name.includes(k))
@@ -864,6 +939,18 @@ function renderList(){
 
     const acts = el("div","row-acts");
 
+    // 看照片／菜單：直接開 Google 地圖那家店的頁面。
+    // 不用 Place Photos API —— 那支屬 Enterprise 級距，每月只有 1,000 次免費，
+    // 一家店三張照片就是三次，很快就會爆掉。開地圖則完全不算 API 呼叫。
+    const look = el("a","icon");
+    look.href = mapsUrl(p);
+    look.target = "_blank";
+    look.rel = "noopener";
+    look.textContent = "◎";
+    look.title = "在 Google 地圖看照片與菜單";
+    look.setAttribute("aria-label", `在 Google 地圖查看 ${p.name}`);
+    acts.appendChild(look);
+
     const fav = el("button","icon" + (state.favs.has(p.id) ? " on" : ""));
     fav.type = "button";
     fav.textContent = state.favs.has(p.id) ? "★" : "☆";
@@ -898,10 +985,12 @@ function renderList(){
 function updateCount(){
   const n = state.picked.size;
   $("#count").textContent = `${n} / ${state.places.length}`;
+  updateMoreBtn();
   $("#spin").disabled = n < 1;
   $("#spin").textContent = n < 1 ? "至少留一家" : "抽";
 }
 
+$("#more").onclick    = loadMore;
 $("#all").onclick     = () => { state.picked = new Set(state.places.map(p => p.id)); renderList(); };
 $("#none").onclick    = () => { state.picked.clear(); renderList(); };
 $("#favOnly").onclick = () => {
@@ -1019,13 +1108,22 @@ function showRestaurant(p){
   const acts = el("div","result-acts");
 
   const nav = el("a","btn btn-stamp");
-  nav.href = p.uri || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.name)}&query_place_id=${p.id}`;
+  nav.href = mapsUrl(p);
   nav.target = "_blank";
   nav.rel = "noopener";
   nav.textContent = "帶我去";
   nav.style.textDecoration = "none";
   nav.style.textAlign = "center";
   acts.appendChild(nav);
+
+  const look = el("a","btn btn-ghost");
+  look.href = mapsUrl(p);
+  look.target = "_blank";
+  look.rel = "noopener";
+  look.textContent = "看照片";
+  look.style.textDecoration = "none";
+  look.style.textAlign = "center";
+  acts.appendChild(look);
 
   const menu = menuFor(p);
   if(menu){
@@ -1075,7 +1173,7 @@ function showDish(place, dish){
   const acts = el("div","result-acts");
 
   const nav = el("a","btn btn-stamp");
-  nav.href = place.uri || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.name)}&query_place_id=${place.id}`;
+  nav.href = mapsUrl(place);
   nav.target = "_blank";
   nav.rel = "noopener";
   nav.textContent = "帶我去";
