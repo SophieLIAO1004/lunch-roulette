@@ -408,7 +408,7 @@ details[open] summary{margin-bottom:12px}
         <button class="btn btn-ghost" id="reset">清除本機資料（收藏與紀錄）</button>
 
         <div class="note" style="margin-top:14px;text-align:center;color:var(--ink-3);font-size:11px">
-          版本 2026-10-12c · 半徑改為硬性限制
+          版本 2026-10-12d · 半徑改為硬性限制
         </div>
       </details>
     </div>
@@ -723,6 +723,16 @@ function mockSearch(){
   $("#resultSlip").scrollIntoView({ behavior:"smooth", block:"start" });
 }
 
+/* 把「圓心 + 半徑」換成 Google 要的矩形（外接正方形）。 */
+function bboxOf(center, radius){
+  const dLat = radius / 111320;
+  const dLng = radius / (111320 * Math.cos(center.lat * Math.PI / 180));
+  return {
+    low:  { latitude: center.lat - dLat, longitude: center.lng - dLng },
+    high: { latitude: center.lat + dLat, longitude: center.lng + dLng },
+  };
+}
+
 /* 送一次請求，回傳 { places, nextPageToken }。pageToken 有值就是翻頁。 */
 async function fetchPage(key, me, radius, cat, pageToken){
   const body = {
@@ -734,7 +744,9 @@ async function fetchPage(key, me, radius, cat, pageToken){
     // locationRestriction 是硬性邊界，圈外的一律不回。
     // 用 locationBias 的話半徑只是「傾向」，Google 仍會照相關性回傳熱門店，
     // 導致交通方式與時間怎麼調結果都差不多。
-    locationRestriction: { circle: { center:{ latitude:me.lat, longitude:me.lng }, radius } },
+    // 注意：Text Search 的 locationRestriction 只接受矩形，不接受圓形，
+    // 所以這裡送外接矩形，多出來的四個角再由下面的距離篩選修掉。
+    locationRestriction: { rectangle: bboxOf(me, radius) },
   };
   // 翻頁時只需要帶 token，其他條件 Google 會沿用第一頁的
   if(pageToken) body.pageToken = pageToken;
