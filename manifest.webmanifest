@@ -1,12 +1,12 @@
 {
-  "name": "今天吃什麼",
-  "short_name": "吃什麼",
-  "description": "抓附近正在營業的餐廳，丟進轉盤決定午餐晚餐",
+  "name": "いただきマワス",
+  "short_name": "いただきマワス",
+  "description": "轉一下，決定今天吃什麼喝什麼",
   "start_url": "./index.html",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#E7EBE1",
-  "theme_color": "#E7EBE1",
+  "background_color": "#FFF2D8",
+  "theme_color": "#FFF2D8",
   "icons": [
     { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
   ]
