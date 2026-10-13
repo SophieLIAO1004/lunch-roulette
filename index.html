@@ -394,13 +394,14 @@ details[open] summary{margin-bottom:12px}
           <div class="note" style="margin-top:9px">
             一次搜尋算「店家數」個元素（20 家 = 20 元素）。走路／腳踏車／開車屬 Essentials，每月 10,000 元素免費；
             <b>機車屬 Enterprise，每月只有 1,000 元素免費</b>，大約 50 次搜尋就會用完。<br>
-            這個月已用 <b><span id="routeUsage">0</span></b> 個元素。
           </div>
           <button class="btn btn-ghost" id="testRoutes" style="margin-top:9px">測試 Routes API 是否已開通</button>
+          <div class="note" id="keyStatus" style="margin-top:9px"></div>
           <div class="note" id="testOut" style="margin-top:9px"></div>
         </div>
 
-        <div class="field">
+        <!-- 金鑰已寫進程式碼時，整區會被隱藏 -->
+        <div class="field" id="keyField">
           <div class="label">Google Maps API 金鑰</div>
           <input type="password" id="key" placeholder="AIza..." autocomplete="off" spellcheck="false">
           <div class="note" style="margin-top:9px" id="keyNote"></div>
@@ -414,11 +415,19 @@ details[open] summary{margin-bottom:12px}
         </div>
 
         <div class="field">
-          <div class="label">目前用量估算</div>
+          <div class="label">用量</div>
           <div class="note">
-            這個月已送出 <b><span id="usage">0</span></b> 次 Text Search 請求。<br>
-            Text Search 屬 Pro 級距，每月前 5,000 次免費。一次搜尋算一次，按一次「再載入 20 家」也算一次。<br>
-            欄位遮罩刻意排除了評分與照片：照片要另外呼叫 Place Photos，那支屬 Enterprise 級距，每月只有 1,000 次免費，所以這裡改成用 ◎ 按鈕直接開 Google 地圖看，不花任何額度。
+            <b>準確的數字請看 Google Cloud Console</b>，那裡才是計費依據，而且不分裝置：<br>
+            <a href="https://console.cloud.google.com/google/maps-apis/metrics" target="_blank" rel="noopener"
+               style="color:var(--pen)">開啟 Google Maps Platform 用量指標 →</a>
+          </div>
+          <div class="note" style="margin-top:11px;padding-top:11px;border-top:1px dotted var(--rule)">
+            以下只計算<b>這台裝置</b>這個月送出的次數，換裝置或清快取就會歸零，僅供隨手參考：<br>
+            Text Search <b><span id="usage">0</span></b> 次　·　Routes <b><span id="routeUsage">0</span></b> 元素
+          </div>
+          <div class="note" style="margin-top:11px">
+            Text Search 屬 Pro 級距，每月前 5,000 次免費。一次搜尋算一次，按一次「再載入 20 家」也算一次。
+            欄位遮罩刻意排除了評分與照片，避免跳到更貴的級距。
           </div>
         </div>
 
@@ -433,7 +442,7 @@ details[open] summary{margin-bottom:12px}
         <button class="btn btn-ghost" id="reset">清除本機資料（收藏與紀錄）</button>
 
         <div class="note" style="margin-top:14px;text-align:center;color:var(--ink-3);font-size:11px">
-          版本 2026-10-13d · 支援 Routes 專用金鑰
+          版本 2026-10-13e · 金鑰內建時隱藏欄位
         </div>
       </details>
     </div>
@@ -480,11 +489,11 @@ const CONFIG = {
   // │      勾 Routes API）                                 │
   // │   ③ 每日配額上限 + 預算警示                          │
   // └──────────────────────────────────────────────────────┘
-  API_KEY: "AIzaSyBOK4b5eLFF0Tu1xbwrFS_PeORECO8o8X8",
+  API_KEY: "",
 
   // 只有在「Routes 用另一把金鑰」時才填；留空就跟 API_KEY 共用同一把。
   // 兩把的情況下，這一把的 API 限制請只勾 Routes API。
-  ROUTES_KEY: "AIzaSyCq7hMo7mdAjbeFDclaD6FBzbWaqUi9PnM",
+  ROUTES_KEY: "",
 
   // 測試模式：用假資料跑，完全不呼叫 Google API。
   // 也可以在「設定」裡直接勾選切換。
@@ -660,13 +669,10 @@ $("#key").oninput = e => store.set("key", e.target.value.trim());
 
 $("#routesKey").value = CONFIG.ROUTES_KEY || store.get("routesKey", "");
 $("#routesKey").oninput = e => store.set("routesKey", e.target.value.trim());
-if(CONFIG.ROUTES_KEY) $("#routesKey").disabled = true;
 
 if(CONFIG.API_KEY){
-  $("#key").disabled = true;
-  $("#keyNote").innerHTML =
-    "金鑰已寫進程式碼，所有人打開就能直接用，不需要各自貼。" +
-    "保護來自 Cloud Console 的 referrer 限制與配額上限。";
+  // 金鑰已內建，整個欄位區沒有存在的必要了
+  $("#keyField").classList.add("hide");
 }else{
   $("#keyNote").innerHTML =
     "金鑰只存在這台裝置的這個網址下——換一台手機、或換成別的網址（localhost 與正式網域算兩個），就要重貼一次。" +
@@ -692,6 +698,21 @@ $("#realTime").onchange = e => {
 
 $("#usage").textContent = usageThisMonth();
 $("#routeUsage").textContent = routeUsageThisMonth();
+
+/* 顯示目前實際會用到哪一把金鑰，方便確認 index.html 裡的設定有沒有生效。
+   只顯示來源與尾四碼，不顯示完整金鑰。 */
+function tail(k){ return k ? "…" + k.slice(-4) : "—"; }
+function refreshKeyStatus(){
+  const main = (CONFIG.API_KEY || $("#key").value || "").trim();
+  const ded  = (CONFIG.ROUTES_KEY || $("#routesKey").value || "").trim();
+  const src  = s => CONFIG[s] ? "程式碼" : "本機輸入";
+  $("#keyStatus").innerHTML =
+    `搜尋用：<b>${tail(main)}</b>（${main ? src("API_KEY") : "未設定"}）　·　` +
+    `路程用：<b>${tail(ded || main)}</b>（${ded ? src("ROUTES_KEY") : (main ? "沿用搜尋金鑰" : "未設定")}）`;
+}
+refreshKeyStatus();
+$("#key").addEventListener("input", refreshKeyStatus);
+$("#routesKey").addEventListener("input", refreshKeyStatus);
 
 /* 用固定的兩個座標送一筆 1×1 的請求（= 1 個元素），
    純粹確認權限有沒有開通，不需要定位、也幾乎不花額度。 */
