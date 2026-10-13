@@ -383,21 +383,33 @@ details[open] summary{margin-bottom:12px}
           <div class="label">路程時間</div>
           <label class="note" style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
             <input type="checkbox" id="realTime" style="width:auto;margin-top:3px;accent-color:var(--pen)">
-            <span>用 <b>Google 實際路網時間</b>取代直線推估。更準，但要另外呼叫 Routes API，而且得先在 Cloud Console 啟用它、加進金鑰的 API 限制。</span>
+            <span>用 <b>Google 實際路網時間</b>取代直線推估。更準，但要另外呼叫 Routes API。</span>
           </label>
+          <div class="note" style="margin-top:9px;border-left:2px solid var(--rule);padding-left:10px">
+            <b>開啟前必須先做這兩件事</b>，少一件就會回 403：<br>
+            ① Cloud Console →「API 和服務 → 程式庫」，搜尋 <b>Routes API</b> 並按啟用<br>
+            ② 憑證 → 編輯你的金鑰 →「API 限制」清單裡把 <b>Routes API</b> 也勾起來（原本只勾了 Places API）<br>
+            設定生效可能要等一兩分鐘。
+          </div>
           <div class="note" style="margin-top:9px">
             一次搜尋算「店家數」個元素（20 家 = 20 元素）。走路／腳踏車／開車屬 Essentials，每月 10,000 元素免費；
             <b>機車屬 Enterprise，每月只有 1,000 元素免費</b>，大約 50 次搜尋就會用完。<br>
             這個月已用 <b><span id="routeUsage">0</span></b> 個元素。
           </div>
+          <button class="btn btn-ghost" id="testRoutes" style="margin-top:9px">測試 Routes API 是否已開通</button>
+          <div class="note" id="testOut" style="margin-top:9px"></div>
         </div>
 
         <div class="field">
           <div class="label">Google Maps API 金鑰</div>
           <input type="password" id="key" placeholder="AIza..." autocomplete="off" spellcheck="false">
-          <div class="note" style="margin-top:9px">
-            金鑰只存在這台裝置的瀏覽器裡。部署後請務必到 Google Cloud Console 設定
-            <b>HTTP referrer 限制</b>（只允許你的網域）與 <b>每日配額上限</b>，這樣就算金鑰外流也不會產生帳單。
+          <div class="note" style="margin-top:9px" id="keyNote"></div>
+
+          <div class="label" style="margin-top:16px">Routes 專用金鑰（選填）</div>
+          <input type="password" id="routesKey" placeholder="留空＝與上面共用同一把" autocomplete="off" spellcheck="false">
+          <div class="note" style="margin-top:9px" id="routesKeyNote">
+            只有在你替 Routes API 另外開了一把金鑰時才需要填。留空的話路程時間會用上面那把。<br>
+            若你是在 Routes API 頁面按「建立憑證」拿到新金鑰，它預設<b>完全沒有限制</b>——請務必回去設定應用程式限制（你的網域）與 API 限制（只勾 Routes API），不限制的金鑰外流風險最高。
           </div>
         </div>
 
@@ -421,7 +433,7 @@ details[open] summary{margin-bottom:12px}
         <button class="btn btn-ghost" id="reset">清除本機資料（收藏與紀錄）</button>
 
         <div class="note" style="margin-top:14px;text-align:center;color:var(--ink-3);font-size:11px">
-          版本 2026-10-12e · 距離排序 + 實際路程時間
+          版本 2026-10-13d · 支援 Routes 專用金鑰
         </div>
       </details>
     </div>
@@ -456,9 +468,23 @@ details[open] summary{margin-bottom:12px}
    1. 設定
    ═══════════════════════════════════════════════════════════ */
 const CONFIG = {
-  // 部署後可以直接把金鑰寫在這裡（記得先設好 referrer 限制），
-  // 或留空讓每個人在「設定」裡自己貼。
+  // ┌──────────────────────────────────────────────────────┐
+  // │ 把金鑰貼在下面這對引號中間，大家就都不用自己貼了。   │
+  // │   例：API_KEY: "AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXX", │
+  // │                                                      │
+  // │ 金鑰放前端是 Google 地圖的標準做法，全世界用地圖的   │
+  // │ 網站都是這樣。保護靠的不是藏起來，而是 Cloud Console │
+  // │ 的三道設定，貼之前請先確認都做好了：                 │
+  // │   ① 網站限制只填你自己的網域                         │
+  // │   ② API 限制只勾 Places API (New)（要用路程時間就再  │
+  // │      勾 Routes API）                                 │
+  // │   ③ 每日配額上限 + 預算警示                          │
+  // └──────────────────────────────────────────────────────┘
   API_KEY: "",
+
+  // 只有在「Routes 用另一把金鑰」時才填；留空就跟 API_KEY 共用同一把。
+  // 兩把的情況下，這一把的 API 限制請只勾 Routes API。
+  ROUTES_KEY: "",
 
   // 測試模式：用假資料跑，完全不呼叫 Google API。
   // 也可以在「設定」裡直接勾選切換。
@@ -627,8 +653,25 @@ $("#mins").oninput = e => {
 };
 
 $("#serial").textContent = String(Math.floor(Math.random()*9000)+1000);
-$("#key").value = store.get("key", CONFIG.API_KEY);
-$("#key").onchange = e => store.set("key", e.target.value.trim());
+/* 寫死的金鑰優先；沒寫死才用這台裝置存的。
+   用 oninput 而不是 onchange——貼完直接按搜尋也存得到。 */
+$("#key").value = CONFIG.API_KEY || store.get("key", "");
+$("#key").oninput = e => store.set("key", e.target.value.trim());
+
+$("#routesKey").value = CONFIG.ROUTES_KEY || store.get("routesKey", "");
+$("#routesKey").oninput = e => store.set("routesKey", e.target.value.trim());
+if(CONFIG.ROUTES_KEY) $("#routesKey").disabled = true;
+
+if(CONFIG.API_KEY){
+  $("#key").disabled = true;
+  $("#keyNote").innerHTML =
+    "金鑰已寫進程式碼，所有人打開就能直接用，不需要各自貼。" +
+    "保護來自 Cloud Console 的 referrer 限制與配額上限。";
+}else{
+  $("#keyNote").innerHTML =
+    "金鑰只存在這台裝置的這個網址下——換一台手機、或換成別的網址（localhost 與正式網域算兩個），就要重貼一次。" +
+    "想讓大家都不用貼，把金鑰寫進 <code>index.html</code> 最上面的 <code>CONFIG.API_KEY</code>。";
+}
 
 $("#mock").checked = store.get("mock", CONFIG.MOCK);
 $("#mock").onchange = e => {
@@ -649,6 +692,30 @@ $("#realTime").onchange = e => {
 
 $("#usage").textContent = usageThisMonth();
 $("#routeUsage").textContent = routeUsageThisMonth();
+
+/* 用固定的兩個座標送一筆 1×1 的請求（= 1 個元素），
+   純粹確認權限有沒有開通，不需要定位、也幾乎不花額度。 */
+$("#testRoutes").onclick = async () => {
+  const btn = $("#testRoutes"), out = $("#testOut");
+  if(!routesKey()){ out.textContent = "還沒有金鑰。"; return; }
+
+  btn.disabled = true; btn.textContent = "測試中…";
+  out.textContent = "";
+  try{
+    // 台北車站 → 西門町，固定座標
+    await applyRealTimes(
+      { lat:25.0478, lng:121.5170 },
+      [{ lat:25.0421, lng:121.5080, mins:null }]
+    );
+    const which = (CONFIG.ROUTES_KEY || $("#routesKey").value.trim()) ? "Routes 專用金鑰" : "主金鑰";
+    out.innerHTML = `<b style='color:var(--pen)'>通了。</b>目前用的是${which}，可以放心打開上面的開關。`;
+  }catch(e){
+    out.innerHTML = `<b style="color:var(--stamp)">還沒通。</b>${e.message}`;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = "測試 Routes API 是否已開通";
+  }
+};
 
 $("#reset").onclick = () => {
   if(!confirm("清除收藏、抽籤紀錄與 API 金鑰？")) return;
@@ -768,8 +835,15 @@ function mockSearch(){
    預設關閉，由設定頁的開關決定。                               */
 const ROUTE_MODE = { walk:"WALK", bike:"BICYCLE", scooter:"TWO_WHEELER", drive:"DRIVE" };
 
-async function applyRealTimes(key, me, places){
+/* Routes 專用金鑰：有設就用，沒設就沿用主金鑰。 */
+function routesKey(){
+  return (CONFIG.ROUTES_KEY || $("#routesKey").value || "").trim()
+      || (CONFIG.API_KEY || $("#key").value || "").trim();
+}
+
+async function applyRealTimes(me, places){
   if(!places.length) return places;
+  const key = routesKey();
 
   const res = await fetch("https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix", {
     method:"POST",
@@ -792,8 +866,18 @@ async function applyRealTimes(key, me, places){
   bumpRouteUsage(places.length);
 
   if(!res.ok){
+    // 403 幾乎一定是「Routes API 沒啟用」或「金鑰的 API 限制沒勾 Routes API」，
+    // 但 Google 的錯誤 body 有時是空的，所以自己補上說明。
     const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `HTTP ${res.status}`);
+    const detail = err?.error?.message || "";
+    if(res.status === 403){
+      throw new Error(
+        (detail ? detail + "　" : "") +
+        "（403）請到 Cloud Console 確認兩件事：① 程式庫裡已啟用 Routes API；" +
+        "② 金鑰的「API 限制」清單裡有勾選 Routes API。兩者都要。"
+      );
+    }
+    throw new Error(detail || `HTTP ${res.status}`);
   }
 
   // 回傳是一個 JSON 陣列，每筆對應一組起訖點
@@ -898,7 +982,7 @@ function mergePlaces(existing, incoming){
 async function search(){
   if($("#mock").checked){ mockSearch(); return; }
 
-  const key = ($("#key").value || CONFIG.API_KEY).trim();
+  const key = (CONFIG.API_KEY || $("#key").value || "").trim();
   if(!key){
     say("還沒有 API 金鑰。打開下面的「設定與說明」貼上金鑰就能開始。", "err");
     $("#settings").open = true;
@@ -930,7 +1014,7 @@ async function search(){
 
     if($("#realTime").checked && places.length){
       btn.textContent = "計算路程…";
-      try { await applyRealTimes(key, me, places); }
+      try { await applyRealTimes(me, places); }
       catch(e){ say(`路程時間計算失敗，改用直線推估：${e.message}`, "info"); }
     }
 
@@ -971,7 +1055,7 @@ async function loadMore(){
 
     if($("#realTime").checked && places.length){
       btn.textContent = "計算路程…";
-      try { await applyRealTimes(q.key, q.me, places); }
+      try { await applyRealTimes(q.me, places); }
       catch(e){ say(`路程時間計算失敗，改用直線推估：${e.message}`, "info"); }
     }
 
