@@ -380,6 +380,19 @@ details[open] summary{margin-bottom:12px}
         </div>
 
         <div class="field">
+          <div class="label">路程時間</div>
+          <label class="note" style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
+            <input type="checkbox" id="realTime" style="width:auto;margin-top:3px;accent-color:var(--pen)">
+            <span>用 <b>Google 實際路網時間</b>取代直線推估。更準，但要另外呼叫 Routes API，而且得先在 Cloud Console 啟用它、加進金鑰的 API 限制。</span>
+          </label>
+          <div class="note" style="margin-top:9px">
+            一次搜尋算「店家數」個元素（20 家 = 20 元素）。走路／腳踏車／開車屬 Essentials，每月 10,000 元素免費；
+            <b>機車屬 Enterprise，每月只有 1,000 元素免費</b>，大約 50 次搜尋就會用完。<br>
+            這個月已用 <b><span id="routeUsage">0</span></b> 個元素。
+          </div>
+        </div>
+
+        <div class="field">
           <div class="label">Google Maps API 金鑰</div>
           <input type="password" id="key" placeholder="AIza..." autocomplete="off" spellcheck="false">
           <div class="note" style="margin-top:9px">
@@ -408,13 +421,13 @@ details[open] summary{margin-bottom:12px}
         <button class="btn btn-ghost" id="reset">清除本機資料（收藏與紀錄）</button>
 
         <div class="note" style="margin-top:14px;text-align:center;color:var(--ink-3);font-size:11px">
-          版本 2026-10-12d · 半徑改為硬性限制
+          版本 2026-10-12e · 距離排序 + 實際路程時間
         </div>
       </details>
     </div>
   </section>
 
-  <div class="note" style="text-align:center;margin:20px 0 0;color:var(--ink-3);font-size:11.5px">
+  <div class="note" style="text-align:center;margin:20px 0 0;color:var(--ink-3);font-size:11.5px" id="footNote">
     抵達時間為直線距離推估，非實際路網時間
   </div>
 </div>
@@ -478,14 +491,16 @@ const MODES = [
   { id:"drive",   label:"開車" },
 ];
 
-/* 類別 → 送給 Google 的搜尋字串 */
+/* 類別 → 搜尋字串 + Google 店家類型。
+   type 有值時會加上 includedType，用「店家類型」而不是關鍵字比對，
+   小吃店、便當店這種不會因為名字裡沒有「餐廳」就被漏掉。 */
 const CATS = [
-  { id:"any",     label:"都可以",   q:"餐廳" },
-  { id:"veg",     label:"素食蔬食", q:"素食 蔬食 餐廳" },
-  { id:"healthy", label:"健康餐",   q:"健康餐盒 沙拉 舒肥雞胸" },
-  { id:"noodle",  label:"麵食",     q:"麵店 拉麵 牛肉麵" },
-  { id:"bento",   label:"便當",     q:"便當 自助餐" },
-  { id:"hotpot",  label:"鍋物",     q:"火鍋 鍋物" },
+  { id:"any",     label:"都可以",   q:"吃的",                   type:"restaurant" },
+  { id:"veg",     label:"素食蔬食", q:"素食 蔬食",              type:null },
+  { id:"healthy", label:"健康餐",   q:"健康餐盒 沙拉 舒肥雞胸", type:null },
+  { id:"noodle",  label:"麵食",     q:"麵店 拉麵 牛肉麵",       type:null },
+  { id:"bento",   label:"便當",     q:"便當 自助餐",            type:null },
+  { id:"hotpot",  label:"鍋物",     q:"火鍋 鍋物",              type:null },
 ];
 
 /* ═══════════════════════════════════════════════════════════
@@ -621,7 +636,19 @@ $("#mock").onchange = e => {
   say(e.target.checked ? "已切到測試模式，搜尋不會呼叫 API。" : "已切回真實資料。", "info");
 };
 if($("#mock").checked) $("#settings").open = true;
+
+$("#realTime").checked = store.get("realTime", false);
+$("#realTime").onchange = e => {
+  store.set("realTime", e.target.checked);
+  say(e.target.checked
+    ? (state.mode === "scooter"
+        ? "已開啟實際路程時間。注意機車走 Enterprise 級距，免費額度只有每月 1,000 元素。"
+        : "已開啟實際路程時間，下次搜尋生效。")
+    : "已改回直線推估，不會呼叫 Routes API。", "info");
+};
+
 $("#usage").textContent = usageThisMonth();
+$("#routeUsage").textContent = routeUsageThisMonth();
 
 $("#reset").onclick = () => {
   if(!confirm("清除收藏、抽籤紀錄與 API 金鑰？")) return;
@@ -645,6 +672,17 @@ function bumpUsage(){
   const n = store.get("usage:"+k, 0) + 1;
   store.set("usage:"+k, n);
   $("#usage").textContent = n;
+}
+
+function routeUsageThisMonth(){
+  const k = new Date().toISOString().slice(0,7);
+  return store.get("route:"+k, 0);
+}
+function bumpRouteUsage(elements){
+  const k = new Date().toISOString().slice(0,7);
+  const n = store.get("route:"+k, 0) + elements;
+  store.set("route:"+k, n);
+  $("#routeUsage").textContent = n;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -723,6 +761,60 @@ function mockSearch(){
   $("#resultSlip").scrollIntoView({ behavior:"smooth", block:"start" });
 }
 
+/* ── Routes API：用 Google 真正的路網時間取代直線推估 ──────────
+   一次請求算「1 個起點 × N 家店」= N 個元素，按元素計費。
+   走路／腳踏車／開車走 Essentials（每月 10,000 元素免費）；
+   機車 TWO_WHEELER 屬 Enterprise（每月僅 1,000 元素免費）。
+   預設關閉，由設定頁的開關決定。                               */
+const ROUTE_MODE = { walk:"WALK", bike:"BICYCLE", scooter:"TWO_WHEELER", drive:"DRIVE" };
+
+async function applyRealTimes(key, me, places){
+  if(!places.length) return places;
+
+  const res = await fetch("https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix", {
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      "X-Goog-Api-Key": key,
+      // condition 一定要拿，才知道哪些是「算不出路線」
+      "X-Goog-FieldMask": "originIndex,destinationIndex,duration,condition",
+    },
+    body: JSON.stringify({
+      origins: [{ waypoint:{ location:{ latLng:{ latitude:me.lat, longitude:me.lng } } } }],
+      destinations: places.map(p => ({
+        waypoint:{ location:{ latLng:{ latitude:p.lat, longitude:p.lng } } },
+      })),
+      travelMode: ROUTE_MODE[state.mode] || "DRIVE",
+      languageCode: CONFIG.LANGUAGE,
+      regionCode: CONFIG.REGION,
+    }),
+  });
+  bumpRouteUsage(places.length);
+
+  if(!res.ok){
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `HTTP ${res.status}`);
+  }
+
+  // 回傳是一個 JSON 陣列，每筆對應一組起訖點
+  const rows = await res.json();
+  rows.forEach(r => {
+    const p = places[r.destinationIndex];
+    if(!p) return;
+    if(r.condition === "ROUTE_EXISTS" && r.duration){
+      // duration 形如 "832s"
+      const secs = parseInt(String(r.duration).replace("s",""), 10);
+      if(!isNaN(secs)){
+        p.mins = Math.max(1, Math.round(secs / 60));
+        p.realTime = true;
+      }
+    }else{
+      p.noRoute = true;       // 算不出路線，保留直線推估值
+    }
+  });
+  return places;
+}
+
 /* 把「圓心 + 半徑」換成 Google 要的矩形（外接正方形）。 */
 function bboxOf(center, radius){
   const dLat = radius / 111320;
@@ -739,6 +831,9 @@ async function fetchPage(key, me, radius, cat, pageToken){
     textQuery: cat.q,
     openNow: true,                 // ← 只回傳現在有開的
     pageSize: CONFIG.PAGE_SIZE,    // 單頁上限 20，Google 會把更大的值壓到 20
+    // 預設是依「相關性」排序，會優先給熱門、評價高的店，
+    // 附近沒沒無聞的小店就被擠掉了。改成由近到遠。
+    rankPreference: "DISTANCE",
     languageCode: CONFIG.LANGUAGE,
     regionCode: CONFIG.REGION,
     // locationRestriction 是硬性邊界，圈外的一律不回。
@@ -748,6 +843,7 @@ async function fetchPage(key, me, radius, cat, pageToken){
     // 所以這裡送外接矩形，多出來的四個角再由下面的距離篩選修掉。
     locationRestriction: { rectangle: bboxOf(me, radius) },
   };
+  if(cat.type) body.includedType = cat.type;
   // 翻頁時只需要帶 token，其他條件 Google 會沿用第一頁的
   if(pageToken) body.pageToken = pageToken;
 
@@ -780,8 +876,10 @@ async function fetchPage(key, me, radius, cat, pageToken){
       type: p.primaryTypeDisplayName?.text || "",
       uri: p.googleMapsUri || "",
       rating: p.rating ?? null,
+      lat: loc.lat, lng: loc.lng,
       dist,
       mins: dist == null ? null : Math.max(1, Math.round(dist / speed)),
+      realTime: false,
     };
   });
 
@@ -829,6 +927,13 @@ async function search(){
 
     // 記住這次搜尋的條件，「載入更多」要沿用
     state.query = { key, me, radius, cat, nextPageToken, pagesLoaded: 1 };
+
+    if($("#realTime").checked && places.length){
+      btn.textContent = "計算路程…";
+      try { await applyRealTimes(key, me, places); }
+      catch(e){ say(`路程時間計算失敗，改用直線推估：${e.message}`, "info"); }
+    }
+
     state.places = mergePlaces([], places);
 
     if(!state.places.length){
@@ -863,6 +968,13 @@ async function loadMore(){
 
   try{
     const { places, nextPageToken } = await fetchPage(q.key, q.me, q.radius, q.cat, q.nextPageToken);
+
+    if($("#realTime").checked && places.length){
+      btn.textContent = "計算路程…";
+      try { await applyRealTimes(q.key, q.me, places); }
+      catch(e){ say(`路程時間計算失敗，改用直線推估：${e.message}`, "info"); }
+    }
+
     const before = state.places.length;
 
     state.places = mergePlaces(state.places, places);
@@ -950,8 +1062,15 @@ function renderList(){
     const meta = el("div","row-meta");
     if(p.mins != null){
       const t = el("span","t");
-      t.textContent = `約 ${p.mins} 分`;
+      // 實際路網時間不加「約」，一眼看得出哪些是推估的
+      t.textContent = p.realTime ? `${p.mins} 分` : `約 ${p.mins} 分`;
+      if(p.realTime) t.style.color = "var(--pen)";
       meta.appendChild(t);
+    }
+    if(p.noRoute){
+      const b = el("span","badge cold");
+      b.textContent = "無法規劃路線";
+      meta.appendChild(b);
     }
     if(p.type){
       const ty = el("span");
@@ -1018,6 +1137,9 @@ function renderList(){
 
 function updateCount(){
   const n = state.picked.size;
+  $("#footNote").textContent = $("#realTime").checked
+    ? "藍色時間為 Google 實際路網時間；灰色為直線推估"
+    : "抵達時間為直線距離推估，非實際路網時間";
   const km = state.query ? (state.query.radius / 1000).toFixed(1) + " 公里內" : "";
   $("#count").textContent = `${n} / ${state.places.length}${km ? " · " + km : ""}`;
   updateMoreBtn();
