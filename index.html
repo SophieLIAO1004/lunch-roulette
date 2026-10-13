@@ -375,6 +375,24 @@ a.icon{text-decoration:none}
 
 /* ── 其他 ───────────────────────────────────── */
 .note{font-size:13px;color:var(--ink-2);line-height:1.7}
+
+/* 勾選框 ＋ 文字，直接當成一行設定 */
+.toggle{display:flex;align-items:center;gap:11px;cursor:pointer;font-weight:700;font-size:14.5px}
+.toggle input{
+  -webkit-appearance:none;appearance:none;margin:0;flex:none;
+  width:26px;height:26px;border-radius:8px;
+  border:2.5px solid var(--line);background:var(--card);
+  box-shadow:0 2px 0 var(--line);
+  position:relative;cursor:pointer;transition:background .14s;
+}
+.toggle input::after{
+  content:"";position:absolute;left:7px;top:3px;
+  width:7px;height:12px;border:solid #fff;border-width:0 3px 3px 0;
+  transform:rotate(42deg) scale(.4);opacity:0;
+  transition:.16s cubic-bezier(.2,1.6,.4,1);
+}
+.toggle input:checked{background:var(--mint)}
+.toggle input:checked::after{opacity:1;transform:rotate(42deg) scale(1)}
 .note code{
   font-family:ui-monospace,Menlo,monospace;font-size:12px;
   background:var(--rule);padding:1px 5px;border-radius:5px;color:var(--ink);
@@ -468,7 +486,7 @@ details[open] summary{margin-bottom:16px}
   <!-- 結果 -->
   <section class="slip hide" id="resultSlip">
     <div class="slip-body">
-      <div class="label" id="pickLabel">勾選想吃的 <span class="count" id="count"></span></div>
+      <div class="label" id="pickLabel">勾選 <span class="count" id="count"></span></div>
       <ul class="list" id="list"></ul>
       <div class="btn-row" style="margin-top:14px">
         <button class="btn btn-ghost" id="all">全選</button>
@@ -488,17 +506,15 @@ details[open] summary{margin-bottom:16px}
         <summary>設定與說明</summary>
 
         <div class="field">
-          <div class="label">測試模式</div>
-          <label class="note" style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
-            <input type="checkbox" id="mock" style="width:auto;margin-top:3px;accent-color:var(--pen)">
-            <span>用假資料跑</span>
+          <label class="toggle">
+            <input type="checkbox" id="mock">
+            <span>測試模式</span>
           </label>
         </div>
 
         <div class="field">
-          <div class="label">路程時間</div>
-          <label class="note" style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
-            <input type="checkbox" id="realTime" style="width:auto;margin-top:3px;accent-color:var(--pen)">
+          <label class="toggle">
+            <input type="checkbox" id="realTime">
             <span>使用 Google 實際預估時間</span>
           </label>
           <button class="btn btn-ghost" id="testRoutes" style="margin-top:9px">測試 Routes API 是否已開通</button>
@@ -522,7 +538,7 @@ details[open] summary{margin-bottom:16px}
         <div class="field">
           <div class="label">用量</div>
           <div class="note">
-            <b>準確的數字請看 Google Cloud Console</b>，那裡才是計費依據，而且不分裝置：<br>
+            <b>準確的數字請看 Google Cloud Console</b><br>
             <a href="https://console.cloud.google.com/google/maps-apis/metrics" target="_blank" rel="noopener"
                style="color:var(--pen)">開啟 Google Maps Platform 用量指標 →</a>
           </div>
@@ -531,7 +547,7 @@ details[open] summary{margin-bottom:16px}
         <button class="btn btn-ghost" id="reset">清除本機資料（收藏與紀錄）</button>
 
         <div class="note" style="margin-top:14px;text-align:center;color:var(--ink-3);font-size:11px">
-          v2026-10-14c
+          v2026-10-14d
         </div>
       </details>
     </div>
@@ -578,11 +594,11 @@ const CONFIG = {
   // │      勾 Routes API）                                 │
   // │   ③ 每日配額上限 + 預算警示                          │
   // └──────────────────────────────────────────────────────┘
-  API_KEY: "AIzaSyBOK4b5eLFF0Tu1xbwrFS_PeORECO8o8X8",
+  API_KEY: "",
 
   // 只有在「Routes 用另一把金鑰」時才填；留空就跟 API_KEY 共用同一把。
   // 兩把的情況下，這一把的 API 限制請只勾 Routes API。
-  ROUTES_KEY: "AIzaSyCq7hMo7mdAjbeFDclaD6FBzbWaqUi9PnM",
+  ROUTES_KEY: "",
 
   // 測試模式：用假資料跑，完全不呼叫 Google API。
   // 也可以在「設定」裡直接勾選切換。
@@ -871,7 +887,6 @@ function switchKind(kind){
   $("#searchLabel").textContent = kind === "drink"
     ? "搜尋附近營業中店家" : "搜尋附近營業中店家";
   $("#catLabel").textContent = kind === "drink" ? "想喝什麼" : "想吃什麼";
-  $("#pickLabel").firstChild.textContent = kind === "drink" ? "勾選想喝的 " : "勾選想吃的 ";
 
   buildModeChips();
   buildCatChips();
@@ -901,7 +916,6 @@ KINDS.forEach(k => {
   if(state.kind === "drink"){
     $("#searchLabel").textContent = "搜尋附近營業中店家";
     $("#catLabel").textContent = "想喝哪一類";
-    $("#pickLabel").firstChild.textContent = "勾選想喝的 ";
     $("#search").textContent = "搜尋附近營業中店家";
   }
 }
@@ -1365,7 +1379,7 @@ function updateMoreBtn(){
 
   const hasMore = q.nextPageToken || q.qsUsed < q.cat.qs.length;
   btn.classList.toggle("hide", !hasMore);
-  btn.textContent = "再找更多店（多 1 次 API）";
+  btn.textContent = "再找更多店";
   note.textContent = hasMore
     ? ""
     : "這個範圍內能找的都找過了。把時間拉長、換個交通方式或換個類別，就會有新的店。";
