@@ -116,6 +116,16 @@ h1{
 .chip:hover{border-color:var(--ink-2);color:var(--ink)}
 .chip[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--slip);font-weight:500}
 
+/* 分頁：像單據上「葷／素」那種對半勾選欄 */
+.tabs{margin-top:12px;gap:0}
+.tab{
+  flex:1;border-radius:0;padding:11px 0;
+  font-size:15px;letter-spacing:.14em;text-indent:.14em;
+  border-right-width:0;
+}
+.tab:first-child{border-radius:var(--r) 0 0 var(--r)}
+.tab:last-child{border-radius:0 var(--r) var(--r) 0;border-right-width:1px}
+
 .slider-row{display:flex;align-items:center;gap:14px}
 input[type=range]{flex:1;accent-color:var(--pen);height:22px}
 .mins{font-family:var(--mono);font-size:22px;font-weight:500;min-width:76px;text-align:right;color:var(--pen)}
@@ -316,10 +326,11 @@ details[open] summary{margin-bottom:12px}
 <div class="wrap">
   <header>
     <div class="masthead">
-      <h1>今天吃什麼</h1>
+      <h1 id="title">今天吃什麼</h1>
       <div class="serial">點餐單<br>NO. <span id="serial">0000</span></div>
     </div>
     <div class="rule-double"></div>
+    <div class="chips tabs" id="kinds"></div>
   </header>
 
   <!-- 條件 -->
@@ -339,13 +350,14 @@ details[open] summary{margin-bottom:12px}
       </div>
 
       <div class="field">
-        <div class="label">想吃哪一類</div>
+        <div class="label" id="catLabel">想吃哪一類</div>
         <div class="chips" id="cats"></div>
       </div>
     </div>
     <div class="tear"></div>
     <div class="slip-body">
       <button class="btn" id="search">搜尋附近正在營業的店</button>
+      <span id="searchLabel" class="hide">搜尋附近正在營業的店</span>
       <div id="msg"></div>
     </div>
   </section>
@@ -353,14 +365,15 @@ details[open] summary{margin-bottom:12px}
   <!-- 結果 -->
   <section class="slip hide" id="resultSlip">
     <div class="slip-body">
-      <div class="label">劃掉不想吃的 <span class="count" id="count"></span></div>
+      <div class="label" id="pickLabel">勾選想吃的 <span class="count" id="count"></span></div>
       <ul class="list" id="list"></ul>
       <div class="btn-row" style="margin-top:14px">
         <button class="btn btn-ghost" id="all">全選</button>
         <button class="btn btn-ghost" id="none">全不選</button>
         <button class="btn btn-ghost" id="favOnly">只留收藏</button>
       </div>
-      <button class="btn btn-ghost hide" id="more" style="margin-top:8px">再載入 20 家</button>
+      <button class="btn btn-ghost hide" id="dropUnpicked" style="margin-top:8px">清掉沒勾的</button>
+      <button class="btn btn-ghost hide" id="more" style="margin-top:8px">再找更多店</button>
       <div class="note" id="moreNote" style="margin-top:9px;text-align:center;color:var(--ink-3)"></div>
     </div>
   </section>
@@ -442,7 +455,7 @@ details[open] summary{margin-bottom:12px}
         <button class="btn btn-ghost" id="reset">清除本機資料（收藏與紀錄）</button>
 
         <div class="note" style="margin-top:14px;text-align:center;color:var(--ink-3);font-size:11px">
-          版本 2026-10-13e · 金鑰內建時隱藏欄位
+          版本 2026-10-13i · 新增小酌與咖啡廳
         </div>
       </details>
     </div>
@@ -489,11 +502,11 @@ const CONFIG = {
   // │      勾 Routes API）                                 │
   // │   ③ 每日配額上限 + 預算警示                          │
   // └──────────────────────────────────────────────────────┘
-  API_KEY: "AIzaSyBOK4b5eLFF0Tu1xbwrFS_PeORECO8o8X8",
+  API_KEY: "",
 
   // 只有在「Routes 用另一把金鑰」時才填；留空就跟 API_KEY 共用同一把。
   // 兩把的情況下，這一把的 API 限制請只勾 Routes API。
-  ROUTES_KEY: "AIzaSyCq7hMo7mdAjbeFDclaD6FBzbWaqUi9PnM",
+  ROUTES_KEY: "",
 
   // 測試模式：用假資料跑，完全不呼叫 Google API。
   // 也可以在「設定」裡直接勾選切換。
@@ -529,20 +542,79 @@ const MODES = [
 /* 類別 → 搜尋字串 + Google 店家類型。
    type 有值時會加上 includedType，用「店家類型」而不是關鍵字比對，
    小吃店、便當店這種不會因為名字裡沒有「餐廳」就被漏掉。 */
-const CATS = [
-  { id:"any",     label:"都可以",   q:"吃的",                   type:"restaurant" },
-  { id:"veg",     label:"素食蔬食", q:"素食 蔬食",              type:null },
-  { id:"healthy", label:"健康餐",   q:"健康餐盒 沙拉 舒肥雞胸", type:null },
-  { id:"noodle",  label:"麵食",     q:"麵店 拉麵 牛肉麵",       type:null },
-  { id:"bento",   label:"便當",     q:"便當 自助餐",            type:null },
-  { id:"hotpot",  label:"鍋物",     q:"火鍋 鍋物",              type:null },
+/* qs 是同一個類別的多組關鍵字。第一組先用，按「再找更多店」時
+   會換下一組重搜——不同關鍵字撈回來的名單差很多，這是繞過
+   Google「單次最多 60 家」限制最有效的方法。 */
+/* 兩個分頁各有各的類別。切換分頁時，收藏、吃過紀錄、菜單
+   也都是各自獨立的。 */
+const KINDS = [
+  { id:"food",  label:"吃的", title:"今天吃什麼", unit:"家" },
+  { id:"drink", label:"喝的", title:"今天喝什麼", unit:"間" },
 ];
+
+const CATS_BY_KIND = {
+  food: [
+    { id:"any",     label:"都可以",   type:"restaurant",
+      qs:["吃的","小吃","餐廳","飯","麵","中式料理","日式料理","美食"] },
+    { id:"veg",     label:"素食蔬食", type:null,
+      qs:["素食","蔬食","素食自助餐","蔬食咖哩","素食麵館"] },
+    { id:"healthy", label:"健康餐",   type:null,
+      qs:["健康餐盒","沙拉","舒肥雞胸","低GI 餐盒","輕食"] },
+    { id:"noodle",  label:"麵食",     type:null,
+      qs:["麵店","拉麵","牛肉麵","義大利麵","米粉 板條","涼麵"] },
+    { id:"bento",   label:"便當",     type:null,
+      qs:["便當","自助餐","雞腿飯","排骨飯","滷肉飯"] },
+    { id:"hotpot",  label:"鍋物",     type:null,
+      qs:["火鍋","鍋物","個人鍋","麻辣鍋","涮涮鍋"] },
+    { id:"bar",     label:"小酌",     type:"bar",
+      qs:["餐酒館","居酒屋","酒吧","熱炒 啤酒","調酒","精釀啤酒"] },
+    // 這類偏「坐下來吃點東西」的咖啡廳；只想買杯咖啡請用「喝的」分頁
+    { id:"cafe",    label:"咖啡廳",   type:"cafe",
+      qs:["咖啡廳","早午餐","輕食 咖啡","甜點咖啡廳","不限時咖啡廳"] },
+  ],
+  drink: [
+    { id:"any",    label:"都可以",   type:null,
+      qs:["手搖飲","飲料店","咖啡","茶飲","冰品 飲料"] },
+    { id:"tea",    label:"手搖茶",   type:null,
+      qs:["手搖飲","珍珠奶茶","紅茶 綠茶","水果茶","青茶 烏龍"] },
+    { id:"coffee", label:"咖啡",     type:"cafe",
+      qs:["咖啡","咖啡廳","手沖咖啡","拿鐵","義式咖啡"] },
+    { id:"juice",  label:"果汁鮮奶", type:null,
+      qs:["果汁","現打果汁","鮮奶茶","木瓜牛奶","冰沙"] },
+    { id:"dessert",label:"甜品冰品", type:null,
+      qs:["豆花","剉冰","甜湯","芋圓","霜淇淋"] },
+  ],
+};
+
+/* 目前分頁的類別清單 */
+function cats(){ return CATS_BY_KIND[state.kind]; }
 
 /* ═══════════════════════════════════════════════════════════
    2. 菜單資料 ── 這裡是你要手動維護的部分
    match 裡放 placeId 或店名關鍵字，任一命中就套用這份菜單。
    ═══════════════════════════════════════════════════════════ */
 const MENUS = [
+  {
+    kind: "drink",                       // 不寫就是 food
+    match: ["50嵐"],
+    items: [
+      { name:"珍珠奶茶 L", price:60 },
+      { name:"四季春茶 L", price:35 },
+      { name:"燕麥奶茶 L", price:60 },
+      { name:"檸檬青茶 L", price:55 },
+      { name:"波霸紅茶拿鐵 L", price:65 },
+    ],
+  },
+  {
+    kind: "drink",
+    match: ["清心福全"],
+    items: [
+      { name:"黃金烏龍 L",   price:35 },
+      { name:"多多綠茶 L",   price:50 },
+      { name:"冬瓜檸檬 L",   price:50 },
+      { name:"白玉歐蕾 L",   price:60 },
+    ],
+  },
   {
     match: ["八方雲集"],
     items: [
@@ -563,29 +635,51 @@ const MENUS = [
     ],
   },
   // ↓ 照這個格式往下加你們常去的店
+  // 飲料店記得加 kind: "drink"，不然會被歸到「吃的」那一頁。
   // {
+  //   kind: "drink",
   //   match: ["ChIJ 開頭的 placeId", "或店名關鍵字"],
   //   items: [ { name:"品項", price:100 } ],
   // },
 ];
 
-/* 測試模式用的假店家。cats 對應上面 CATS 的 id。 */
-const MOCK_PLACES = [
-  { name:"八方雲集 站前店",   type:"鍋貼水餃", cats:["any","noodle"] },
-  { name:"麥當勞 忠孝店",     type:"速食",     cats:["any"] },
-  { name:"齋心素食自助餐",     type:"素食",     cats:["any","veg","bento"] },
-  { name:"陽光菜單 健康餐盒", type:"健康餐",   cats:["any","healthy"] },
-  { name:"林東芳牛肉麵",       type:"牛肉麵",   cats:["any","noodle"] },
-  { name:"雞排大王 便當專門",  type:"便當",     cats:["any","bento"] },
-  { name:"小蒙牛頂級麻辣鍋",   type:"火鍋",     cats:["any","hotpot"] },
-  { name:"三分鐘蔬食咖哩",     type:"蔬食",     cats:["any","veg"] },
-  { name:"一風堂拉麵",         type:"拉麵",     cats:["any","noodle"] },
-  { name:"舒服廚房 舒肥雞胸",  type:"健康餐",   cats:["any","healthy"] },
-  { name:"阿姨自助餐",         type:"自助餐",   cats:["any","bento"] },
-  { name:"石二鍋 南京店",      type:"個人鍋",   cats:["any","hotpot"] },
-  { name:"劉山東小吃店",       type:"麵食",     cats:["any","noodle"] },
-  { name:"綠洲沙拉吧",         type:"沙拉",     cats:["any","healthy","veg"] },
-];
+/* 測試模式用的假店家。cats 對應上面各分頁的類別 id。 */
+const MOCK_BY_KIND = {
+  food: [
+    { name:"八方雲集 站前店",   type:"鍋貼水餃", cats:["any","noodle"] },
+    { name:"麥當勞 忠孝店",     type:"速食",     cats:["any"] },
+    { name:"齋心素食自助餐",     type:"素食",     cats:["any","veg","bento"] },
+    { name:"陽光菜單 健康餐盒", type:"健康餐",   cats:["any","healthy"] },
+    { name:"林東芳牛肉麵",       type:"牛肉麵",   cats:["any","noodle"] },
+    { name:"雞排大王 便當專門",  type:"便當",     cats:["any","bento"] },
+    { name:"小蒙牛頂級麻辣鍋",   type:"火鍋",     cats:["any","hotpot"] },
+    { name:"三分鐘蔬食咖哩",     type:"蔬食",     cats:["any","veg"] },
+    { name:"一風堂拉麵",         type:"拉麵",     cats:["any","noodle"] },
+    { name:"舒服廚房 舒肥雞胸",  type:"健康餐",   cats:["any","healthy"] },
+    { name:"阿姨自助餐",         type:"自助餐",   cats:["any","bento"] },
+    { name:"石二鍋 南京店",      type:"個人鍋",   cats:["any","hotpot"] },
+    { name:"劉山東小吃店",       type:"麵食",     cats:["any","noodle"] },
+    { name:"綠洲沙拉吧",         type:"沙拉",     cats:["any","healthy","veg"] },
+    { name:"鳥哲燒鳥専門店",     type:"居酒屋",   cats:["any","bar"] },
+    { name:"小後苑 Backyard Jr", type:"餐酒館",   cats:["any","bar"] },
+    { name:"老串角居酒屋",       type:"居酒屋",   cats:["any","bar"] },
+    { name:"興波咖啡",           type:"咖啡廳",   cats:["any","cafe"] },
+    { name:"早秋咖啡 早午餐",    type:"早午餐",   cats:["any","cafe","healthy"] },
+    { name:"沐光咖啡 不限時",    type:"咖啡廳",   cats:["any","cafe"] },
+  ],
+  drink: [
+    { name:"50嵐 光復店",       type:"手搖飲", cats:["any","tea"] },
+    { name:"清心福全 大學路",    type:"手搖飲", cats:["any","tea"] },
+    { name:"可不可熟成紅茶",     type:"手搖飲", cats:["any","tea"] },
+    { name:"路易莎咖啡",         type:"咖啡廳", cats:["any","coffee"] },
+    { name:"cama café",          type:"咖啡廳", cats:["any","coffee"] },
+    { name:"興隆果汁吧",         type:"果汁",   cats:["any","juice"] },
+    { name:"阿婆豆花",           type:"豆花",   cats:["any","dessert"] },
+    { name:"三星蔥冰城",         type:"冰品",   cats:["any","dessert"] },
+    { name:"大苑子",             type:"手搖飲", cats:["any","tea","juice"] },
+    { name:"迷客夏 綠光牧場",    type:"鮮奶茶", cats:["any","tea","juice"] },
+  ],
+};
 
 /* ═══════════════════════════════════════════════════════════
    3. 本機儲存（在聊天預覽裡會自動退回記憶體模式）
@@ -616,15 +710,21 @@ const store = (() => {
 /* ═══════════════════════════════════════════════════════════
    4. 狀態
    ═══════════════════════════════════════════════════════════ */
+/* 每個分頁的設定與資料分開存：鍵名後面加 :food 或 :drink。 */
+const kindNow = store.get("kind", "food");
+const K = (name, kind) => `${name}:${kind || state.kind}`;
+
 const state = {
-  mode: store.get("mode", "walk"),
-  mins: store.get("mins", 10),
-  cat:  store.get("cat", "any"),
+  kind: kindNow,
+  mode: store.get(K("mode", kindNow), "walk"),
+  mins: store.get(K("mins", kindNow), 10),
+  cat:  store.get(K("cat",  kindNow), "any"),
   places: [],
-  query: null,          // 上次搜尋的條件 + nextPageToken，給「載入更多」用
+  query: null,          // 上次搜尋的條件 + nextPageToken，給「再找更多店」用
+  rejected: new Set(),  // 這次搜尋中被清掉的店，不再撈回來
   picked: new Set(),
-  favs: new Set(store.get("favs", [])),
-  history: store.get("history", []),   // [{id, name, at}]
+  favs: new Set(store.get(K("favs", kindNow), [])),
+  history: store.get(K("history", kindNow), []),   // [{id, name, at}]
   spinning: false,
 };
 
@@ -650,16 +750,89 @@ function buildChips(host, items, current, onPick){
   });
 }
 
-buildChips($("#modes"), MODES, state.mode, id => { state.mode = id; store.set("mode", id); });
-buildChips($("#cats"),  CATS,  state.cat,  id => { state.cat  = id; store.set("cat",  id); });
+function buildModeChips(){
+  buildChips($("#modes"), MODES, state.mode, id => {
+    state.mode = id; store.set(K("mode"), id);
+  });
+}
+function buildCatChips(){
+  buildChips($("#cats"), cats(), state.cat, id => {
+    state.cat = id; store.set(K("cat"), id);
+  });
+}
+buildModeChips();
+buildCatChips();
 
 $("#mins").value = state.mins;
 $("#minsOut").textContent = state.mins;
 $("#mins").oninput = e => {
   state.mins = +e.target.value;
   $("#minsOut").textContent = state.mins;
-  store.set("mins", state.mins);
+  store.set(K("mins"), state.mins);
 };
+
+/* ── 分頁切換：吃的 / 喝的 ───────────────────────────────
+   兩邊的條件、收藏、紀錄、菜單全部分開，切換時整個換掉。 */
+function switchKind(kind){
+  if(kind === state.kind) return;
+  store.set("kind", kind);
+  state.kind = kind;
+
+  // 載入這個分頁自己的設定與資料
+  state.mode    = store.get(K("mode"), "walk");
+  state.mins    = store.get(K("mins"), 10);
+  state.cat     = store.get(K("cat"),  "any");
+  state.favs    = new Set(store.get(K("favs"), []));
+  state.history = store.get(K("history"), []);
+
+  // 清掉上一個分頁的搜尋結果
+  state.places = [];
+  state.query = null;
+  state.rejected = new Set();
+  state.picked = new Set();
+
+  const k = KINDS.find(x => x.id === kind);
+  document.title = k.title;
+  $("#title").textContent = k.title;
+  $("#searchLabel").textContent = kind === "drink"
+    ? "搜尋附近正在營業的飲料店" : "搜尋附近正在營業的店";
+  $("#catLabel").textContent = kind === "drink" ? "想喝哪一類" : "想吃哪一類";
+  $("#pickLabel").firstChild.textContent = kind === "drink" ? "勾選想喝的 " : "勾選想吃的 ";
+
+  buildModeChips();
+  buildCatChips();
+  $("#mins").value = state.mins;
+  $("#minsOut").textContent = state.mins;
+  $("#search").textContent = $("#searchLabel").textContent;
+
+  $("#resultSlip").classList.add("hide");
+  $("#dock").classList.add("hide");
+  say("");
+  [...$("#kinds").children].forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.kind === kind)));
+}
+
+/* 建立分頁按鈕 */
+KINDS.forEach(k => {
+  const b = el("button","chip tab");
+  b.type = "button";
+  b.dataset.kind = k.id;
+  b.textContent = k.label;
+  b.setAttribute("aria-pressed", String(k.id === state.kind));
+  b.onclick = () => switchKind(k.id);
+  $("#kinds").appendChild(b);
+});
+{
+  const k = KINDS.find(x => x.id === state.kind);
+  document.title = k.title;
+  $("#title").textContent = k.title;
+  if(state.kind === "drink"){
+    $("#searchLabel").textContent = "搜尋附近正在營業的飲料店";
+    $("#catLabel").textContent = "想喝哪一類";
+    $("#pickLabel").firstChild.textContent = "勾選想喝的 ";
+    $("#search").textContent = "搜尋附近正在營業的飲料店";
+  }
+}
 
 $("#serial").textContent = String(Math.floor(Math.random()*9000)+1000);
 /* 寫死的金鑰優先；沒寫死才用這台裝置存的。
@@ -739,7 +912,7 @@ $("#testRoutes").onclick = async () => {
 };
 
 $("#reset").onclick = () => {
-  if(!confirm("清除收藏、抽籤紀錄與 API 金鑰？")) return;
+  if(!confirm("清除兩個分頁的收藏、抽籤紀錄與 API 金鑰？")) return;
   store.clear();
   location.reload();
 };
@@ -814,11 +987,11 @@ function getPosition(){
 
 function mockSearch(){
   state.query = null;              // 測試模式沒有翻頁
-  const cat = CATS.find(c => c.id === state.cat);
+  const cat = cats().find(c => c.id === state.cat) || cats()[0];
   const speed = CONFIG.SPEED[state.mode];
   const radius = radiusFor(state.mode, state.mins);
 
-  state.places = MOCK_PLACES
+  state.places = MOCK_BY_KIND[state.kind]
     .filter(m => m.cats.includes(state.cat))
     .map((m, i) => {
       const dist = Math.round(radius * (0.15 + 0.8 * Math.random()));
@@ -841,7 +1014,7 @@ function mockSearch(){
     $("#dock").classList.add("hide");
     return;
   }
-  state.picked = new Set(state.places.map(p => p.id));
+  state.picked = new Set();   // 預設都不勾，自己挑想吃的
   renderList();
   $("#resultSlip").classList.remove("hide");
   $("#dock").classList.remove("hide");
@@ -930,10 +1103,12 @@ function bboxOf(center, radius){
   };
 }
 
-/* 送一次請求，回傳 { places, nextPageToken }。pageToken 有值就是翻頁。 */
-async function fetchPage(key, me, radius, cat, pageToken){
+/* 送一次請求，回傳 { places, nextPageToken }。
+   pageToken 有值 = 翻同一組關鍵字的下一頁；
+   queryText 指定 = 換一組關鍵字重新搜。 */
+async function fetchPage(key, me, radius, cat, pageToken, queryText){
   const body = {
-    textQuery: cat.q,
+    textQuery: queryText || cat.qs[0],
     openNow: true,                 // ← 只回傳現在有開的
     pageSize: CONFIG.PAGE_SIZE,    // 單頁上限 20，Google 會把更大的值壓到 20
     // 預設是依「相關性」排序，會優先給熱門、評價高的店，
@@ -1025,13 +1200,15 @@ async function search(){
 
   btn.textContent = "搜尋中…";
   const radius = radiusFor(state.mode, state.mins);
-  const cat = CATS.find(c => c.id === state.cat);
+  const cat = cats().find(c => c.id === state.cat) || cats()[0];
 
   try{
-    const { places, nextPageToken } = await fetchPage(key, me, radius, cat, null);
+    state.rejected = new Set();   // 新搜尋，重置「劃掉過」的紀錄
+    const { places, nextPageToken } = await fetchPage(key, me, radius, cat, null, cat.qs[0]);
 
-    // 記住這次搜尋的條件，「載入更多」要沿用
-    state.query = { key, me, radius, cat, nextPageToken, pagesLoaded: 1 };
+    // 記住這次搜尋的條件，「再找更多店」要沿用。
+    // qsUsed = 已經用過的關鍵字組數。
+    state.query = { key, me, radius, cat, nextPageToken, qsUsed: 1 };
 
     if($("#realTime").checked && places.length){
       btn.textContent = "計算路程…";
@@ -1046,7 +1223,7 @@ async function search(){
       $("#resultSlip").classList.add("hide");
       $("#dock").classList.add("hide");
     }else{
-      state.picked = new Set(state.places.map(p => p.id));
+      state.picked = new Set();   // 預設都不勾，自己挑想吃的
       renderList();
       $("#resultSlip").classList.remove("hide");
       $("#dock").classList.remove("hide");
@@ -1061,18 +1238,34 @@ async function search(){
 }
 $("#search").onclick = search;
 
-/* 載入更多：Text Search 單頁最多 20 筆，最多三頁共 60 筆。
-   每翻一頁就多算一次 API 請求，所以做成手動按鈕而不是自動抓滿。 */
+/* 再找更多店：兩段式。
+   ① 同一組關鍵字還有下一頁 → 翻頁（Google 最多三頁 60 家）
+   ② 翻完了 → 換下一組關鍵字重搜，撈回來的會是完全不同的一批
+   劃掉過的店不會再回來。 */
 async function loadMore(){
   const q = state.query;
-  if(!q || !q.nextPageToken) return;
+  if(!q) return;
 
   const btn = $("#more");
   btn.disabled = true;
-  btn.textContent = "載入中…";
+  btn.textContent = "搜尋中…";
 
   try{
-    const { places, nextPageToken } = await fetchPage(q.key, q.me, q.radius, q.cat, q.nextPageToken);
+    let places, nextPageToken, usedQuery;
+
+    if(q.nextPageToken){
+      ({ places, nextPageToken } = await fetchPage(q.key, q.me, q.radius, q.cat, q.nextPageToken));
+    }else if(q.qsUsed < q.cat.qs.length){
+      usedQuery = q.cat.qs[q.qsUsed];
+      ({ places, nextPageToken } = await fetchPage(q.key, q.me, q.radius, q.cat, null, usedQuery));
+      q.qsUsed += 1;
+    }else{
+      say("這個範圍內能找的都找過了。把時間拉長、換個交通方式或換個類別，就會有新的店。", "info");
+      return;
+    }
+
+    // 劃掉過的不要再出現
+    places = places.filter(p => !state.rejected.has(p.id));
 
     if($("#realTime").checked && places.length){
       btn.textContent = "計算路程…";
@@ -1081,17 +1274,16 @@ async function loadMore(){
     }
 
     const before = state.places.length;
-
     state.places = mergePlaces(state.places, places);
     q.nextPageToken = nextPageToken;
-    q.pagesLoaded += 1;
-
-    // 新加進來的預設也勾選
-    places.forEach(p => { if(state.places.some(x => x.id === p.id)) state.picked.add(p.id); });
 
     const added = state.places.length - before;
     renderList();
-    if(!added) say("沒有新的店家了——這個範圍內的結果已經全部載入。", "info");
+    if(added){
+      say(usedQuery ? `換了關鍵字「${usedQuery}」，新增 ${added} 家。` : `新增 ${added} 家。`, "info");
+    }else{
+      say("這一批沒有新的店，再按一次會換別的關鍵字試試。", "info");
+    }
   }catch(err){
     say(`載入更多失敗：${err.message}`, "err");
   }finally{
@@ -1101,25 +1293,28 @@ async function loadMore(){
 }
 
 function updateMoreBtn(){
-  const btn = $("#more");
-  const note = $("#moreNote");
+  const btn = $("#more"), note = $("#moreNote"), drop = $("#dropUnpicked");
   const q = state.query;
+
+  // 一家都還沒勾時不顯示「清掉沒勾的」——那會把整份名單清空
+  const unpicked = state.places.filter(p => !state.picked.has(p.id)).length;
+  const showDrop = unpicked > 0 && state.picked.size > 0;
+  drop.classList.toggle("hide", !showDrop);
+  if(showDrop) drop.textContent = `清掉沒勾的 ${unpicked} 家`;
 
   if($("#mock").checked){
     btn.classList.add("hide");
     note.textContent = "測試模式沒有更多資料。";
     return;
   }
-  if(q && q.nextPageToken){
-    btn.classList.remove("hide");
-    btn.textContent = "再載入 20 家（多 1 次 API）";
-    note.textContent = "";
-  }else{
-    btn.classList.add("hide");
-    note.textContent = q
-      ? "這個範圍內的結果已經全部載入了。想要更多的話，把時間拉長或換個類別。"
-      : "";
-  }
+  if(!q){ btn.classList.add("hide"); note.textContent = ""; return; }
+
+  const hasMore = q.nextPageToken || q.qsUsed < q.cat.qs.length;
+  btn.classList.toggle("hide", !hasMore);
+  btn.textContent = "再找更多店（多 1 次 API）";
+  note.textContent = hasMore
+    ? ""
+    : "這個範圍內能找的都找過了。把時間拉長、換個交通方式或換個類別，就會有新的店。";
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1131,7 +1326,9 @@ function mapsUrl(p){
 }
 
 function menuFor(place){
+  // 只找這個分頁的菜單：沒寫 kind 的視為 food
   return MENUS.find(m =>
+    (m.kind || "food") === state.kind &&
     m.match.some(k => k === place.id || place.name.includes(k))
   );
 }
@@ -1216,7 +1413,7 @@ function renderList(){
     fav.setAttribute("aria-label", `收藏 ${p.name}`);
     fav.onclick = () => {
       state.favs.has(p.id) ? state.favs.delete(p.id) : state.favs.add(p.id);
-      store.set("favs", [...state.favs]);
+      store.set(K("favs"), [...state.favs]);
       fav.className = "icon" + (state.favs.has(p.id) ? " on" : "");
       fav.textContent = state.favs.has(p.id) ? "★" : "☆";
     };
@@ -1249,10 +1446,21 @@ function updateCount(){
   $("#count").textContent = `${n} / ${state.places.length}${km ? " · " + km : ""}`;
   updateMoreBtn();
   $("#spin").disabled = n < 1;
-  $("#spin").textContent = n < 1 ? "至少留一家" : "抽";
+  $("#spin").textContent = n < 1 ? "先勾想吃的" : "抽";
 }
 
 $("#more").onclick    = loadMore;
+
+/* 把沒勾的從名單上移掉，並記住它們，之後「再找更多店」不會再撈回來。
+   這樣名單會隨著你劃掉而越來越乾淨，而不是越來越長。 */
+$("#dropUnpicked").onclick = () => {
+  const dropped = state.places.filter(p => !state.picked.has(p.id));
+  if(!dropped.length) return;
+  dropped.forEach(p => state.rejected.add(p.id));
+  state.places = state.places.filter(p => state.picked.has(p.id));
+  renderList();
+  say(`清掉 ${dropped.length} 家，之後也不會再出現。按「再找更多店」補新的。`, "info");
+};
 $("#all").onclick     = () => { state.picked = new Set(state.places.map(p => p.id)); renderList(); };
 $("#none").onclick    = () => { state.picked.clear(); renderList(); };
 $("#favOnly").onclick = () => {
@@ -1353,7 +1561,7 @@ function showRestaurant(p){
   state.history = [{ id:p.id, name:p.name, at:Date.now() }]
     .concat(state.history.filter(h => h.id !== p.id))
     .slice(0, 40);
-  store.set("history", state.history);
+  store.set(K("history"), state.history);
 
   const box = $("#result");
   box.innerHTML = "";
